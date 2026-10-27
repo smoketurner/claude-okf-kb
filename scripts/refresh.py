@@ -312,13 +312,14 @@ def select_review(
     """The least-recently-verified concepts, due for a staleness review this run.
 
     A concept's last-verified date is the later of its recorded review date and its
-    own timestamp — a recent CAS update already re-verified it against the source.
+    own generated.at — a recent CAS update already re-verified it against the source.
     """
     due: list[tuple[str, str]] = []
     for rel, fm in concepts:
-        if fm.get("status") == "superseded":
+        if fm.get("status") == "deprecated":
             continue
-        ts = fm.get("timestamp")
+        generated = fm.get("generated") or {}
+        ts = generated.get("at") if isinstance(generated, dict) else None
         ts = ts.isoformat() if isinstance(ts, datetime.datetime) else str(ts or "")
         due.append((max(review_state.get(rel, ""), ts[:10]), rel))
     due.sort()
@@ -671,7 +672,7 @@ def merge_review(reviewed: list[str], today: str) -> None:
     REVIEW.write_text(json.dumps(state, indent=1) + "\n", encoding="utf-8")
 
 
-def log_line(metrics: dict, date: str) -> str:
+def log_entry(metrics: dict) -> str:
     extras = [
         f"+{metrics[k]} {label}"
         for k, label in (
@@ -684,7 +685,7 @@ def log_line(metrics: dict, date: str) -> str:
     pruned = len(metrics.get("pruned", []))
     parts = [
         (
-            f"- {date} — Refresh run: {metrics.get('sessions', 0)} new sessions"
+            f"* **Refresh**: {metrics.get('sessions', 0)} new sessions"
             f"{f' ({', '.join(extras)})' if extras else ''}"
         ),
         f"{metrics.get('created', 0)} concepts created",
@@ -703,6 +704,23 @@ def log_line(metrics: dict, date: str) -> str:
     return line + "."
 
 
+def append_log(log: Path, today: str, entry: str) -> None:
+    """Insert entry under today's date group, newest group first (OKF v0.2 §9)."""
+    lines = log.read_text(encoding="utf-8").rstrip("\n").split("\n")
+    heading = f"## {today}"
+    if heading in lines:
+        idx = lines.index(heading) + 1
+        while idx < len(lines) and lines[idx].startswith("* "):
+            idx += 1
+        lines.insert(idx, entry)
+    else:
+        first = next(
+            (i for i, line in enumerate(lines) if line.startswith("## ")), len(lines)
+        )
+        lines[first:first] = [heading, entry, ""]
+    log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def cmd_finalize(run_dir: Path) -> None:
     proposed = json.loads(
         (run_dir / "proposed_watermarks.json").read_text(encoding="utf-8")
@@ -717,13 +735,9 @@ def cmd_finalize(run_dir: Path) -> None:
     apply_pruned(metrics.get("pruned", []))
     merge_usage(run_dir, today)
     merge_review(metrics.get("reviewed", []), today)
-    line = log_line(metrics, today)
-    log = KB / "log.md"
-    log.write_text(
-        log.read_text(encoding="utf-8").rstrip("\n") + "\n" + line + "\n",
-        encoding="utf-8",
-    )
-    print(f"watermarks promoted; log.md appended: {line}")
+    entry = log_entry(metrics)
+    append_log(KB / "log.md", today, entry)
+    print(f"watermarks promoted; log.md appended: {entry}")
 
 
 def main() -> int:

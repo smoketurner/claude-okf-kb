@@ -4,7 +4,7 @@ A template repository and Claude Code plugin for building a knowledge base out o
 Claude Code sessions. It mines the transcripts under `~/.claude/projects` for one or more source
 repositories, distills durable facts (decisions and rationale, dead ends, conventions, gotchas,
 runbooks, integration quirks, tool-use patterns) into an
-[Open Knowledge Format v0.1](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf)
+[Open Knowledge Format v0.2](https://github.com/GoogleCloudPlatform/open-knowledge-format/blob/main/SPEC.md)
 bundle of markdown concepts, and keeps that bundle current with a self-improving refresh loop
 that proposes every change as a pull request.
 
@@ -64,6 +64,18 @@ knowledge-base repository.
 scripts/            okf.py, refresh.py, digest.sh, refresh-propose.sh, init.py
 template/           bundle skeleton copied into a new knowledge base
 ```
+
+## Spec version
+
+Bundles produced by this template conform to
+[Open Knowledge Format v0.2](https://github.com/GoogleCloudPlatform/open-knowledge-format/blob/main/SPEC.md)
+(§11 conformance): every concept has parseable frontmatter with a `type`, `index.md` files carry
+no frontmatter (the root one holds only `okf_version: "0.2"`), and `log.md` is a newest-first
+list of `## YYYY-MM-DD` groups. Concepts use the spec's `generated`, `verified`, `status`
+(`draft | stable | deprecated`), and `sources[].resource` families. Four keys are extensions the
+spec permits: `version` and `content_sha256` (the compare-and-set token), `supersedes` (link from a
+deprecated decision to its replacement), and `project` on a source entry. `okf.py validate`
+enforces all of this, so a bundle that validates is conformant.
 
 ## kb.config.json
 

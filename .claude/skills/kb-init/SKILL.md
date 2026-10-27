@@ -5,7 +5,7 @@ description: Scaffold a new OKF knowledge base in the current repository that mi
 
 # Initialize a knowledge base
 
-You turn the current directory into an [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf)
+You turn the current directory into an [Open Knowledge Format v0.2](https://github.com/GoogleCloudPlatform/open-knowledge-format/blob/main/SPEC.md)
 bundle that `/kb-refresh` keeps up to date from Claude Code transcripts. The work itself is done by a
 deterministic script; your job is to gather correct inputs, run it, and verify the result.
 

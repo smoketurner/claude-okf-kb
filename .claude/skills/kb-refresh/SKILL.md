@@ -67,17 +67,19 @@ For each candidate fact (from step 2 or 3), decide **new concept** vs **update o
   (`rg -i` the key symbols across the type dirs) before concluding a fact is new.
 - If an existing concept covers the topic, UPDATE it via the CAS protocol in AGENTS.md: read its
   `(version, content_sha256)`, merge the new knowledge (do not delete still-valid content), append a
-  `sources` entry `{session: "<uuid>", date: "YYYY-MM-DD", project: "<repo>"}` in **block YAML style**
-  — or, for a fact mined from a `local--*` digest,
-  `{artifact: "<repo>/.local/<relpath>", date: "YYYY-MM-DD", project: "<repo>"}` — or, for a
-  fact mined from a `memory--*` digest,
-  `{session: "memory:<file>.md", date: "YYYY-MM-DD", project: "<repo>"}` —
-  bump `version` by one, refresh `timestamp`, then `uv run scripts/okf.py stamp <file>`.
+  `sources` entry in **block YAML style** —
+  `{resource: "session:<uuid>", last_modified: "YYYY-MM-DDT00:00:00Z", project: "<repo>"}` for a
+  transcript digest (a `<session>--agent-<id>` digest cites the parent `<session>` uuid),
+  `{resource: "<repo>/.local/<relpath>", last_modified: ..., project: "<repo>"}` for a `local--*`
+  digest, or `{resource: "memory:<file>.md", last_modified: ..., project: "<repo>"}` for a
+  `memory--*` digest — bump `version` by one, set `generated` to
+  `{ by: kb-refresh/<your model id>, at: <now, ISO 8601 UTC> }`, then
+  `uv run scripts/okf.py stamp <file>`.
 - If genuinely new, create it in the right type dir at `version: v1` per AGENTS.md, then stamp. Its
   first tag is the repo scope (the source repo's basename, or `cross`).
 - **Recency wins on contradictions**: when a new session contradicts an existing concept's current-state
   claim, the newer session is authoritative — correct the concept (keep decisions, mark
-  `status: superseded` + `supersedes` only when a decision was truly reversed). When unsure whether a
+  `status: deprecated` + `supersedes` only when a decision was truly reversed). When unsure whether a
   claim is current, verify against the live checkouts listed in `kb.config.json` `source_repos` —
   the code is ground truth.
 - For every concept you create or update, note how many of this run's digests evidenced it — you
@@ -93,14 +95,14 @@ related concepts bidirectionally.
 ## 6. Review existing concepts (staleness + pruning)
 
 The manifest's `review` list holds the least-recently-verified existing concepts (selected from
-`.refresh/review.json` dates, falling back to each concept's own `timestamp`; the slice size is
+`.refresh/review.json` dates, falling back to each concept's own `generated.at`; the slice size is
 `review_slice` in `kb.config.json`). For each one, verify its current-state claims against the live
 source repos. Outcomes:
 
 - **Still accurate** — touch nothing; just include it in `reviewed` (step 8).
 - **Stale claim** — correct it via the CAS protocol (also counts toward `updated`).
 - **Duplicate** — merge into the surviving concept, then treat the loser as pruned below.
-- **No longer earns its place** — a decision gets `status: superseded` plus a `supersedes` link
+- **No longer earns its place** — a decision gets `status: deprecated` plus a `supersedes` link
   (decisions are never deleted); any other type is deleted, but do NOT delete files yourself:
   first `rg` the bundle for inbound links and fix them, then add its path to `pruned` in metrics —
   `finalize` performs the removal. Zero usage in `.refresh/usage.json` never justifies deletion by
@@ -116,7 +118,7 @@ plus the step-6 review outcomes. Ask: is the inclusion bar in AGENTS.md producin
 recurring category (now including tool-use patterns)? Is a type directory overflowing or a taxonomy
 line unclear? Are reviewed concepts going stale in a systematic way? If — and only if — you see a
 concrete, recurring signal, make one small edit to the inclusion bar or taxonomy in AGENTS.md
-(bump its `version`, stamp it) and note it. Do not churn AGENTS.md without a clear signal.
+(bump its `version`, update `generated`, stamp it) and note it. Do not churn AGENTS.md without a clear signal.
 
 ## 8. Metrics, proposal summary + finalize
 
@@ -135,7 +137,7 @@ length of its `sources` list) — plus one line summarizing step 6, e.g.
 
 Then run `uv run scripts/refresh.py finalize --run-dir <run_dir>` — it advances the watermarks,
 deletes the `pruned` files, merges the run's usage into `.refresh/usage.json`, records `reviewed`
-dates in `.refresh/review.json`, and appends the run record to log.md, all **in the working tree**
+dates in `.refresh/review.json`, and adds the run record under today's date in log.md, all **in the working tree**
 (these land only when the PR merges). After finalize, re-run `uv run scripts/okf.py index <dir>`
 for any directory a pruned file left, and validate must be clean.
 

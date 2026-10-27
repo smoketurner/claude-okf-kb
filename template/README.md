@@ -5,7 +5,7 @@ description: Knowledge base distilled from AI coding sessions building {{TITLE}}
 version: v1
 content_sha256: 0000000000000000000000000000000000000000000000000000000000000000
 tags: [cross]
-timestamp: {{DATE}}T00:00:00Z
+generated: { by: process:kb-init, at: {{DATE}}T00:00:00Z }
 ---
 
 # {{KB_NAME}}
@@ -16,7 +16,7 @@ across these repositories:
 
 {{REPO_PATHS}}
 
-- Format: [Open Knowledge Format v0.1](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf) —
+- Format: [Open Knowledge Format v0.2](https://github.com/GoogleCloudPlatform/open-knowledge-format/blob/main/SPEC.md) —
   markdown concepts with YAML frontmatter, one file per concept.
 - Start here: [index.md](index.md) (bundle map) → per-directory `index.md` listings.
 - Contributing (human or agent): [AGENTS.md](AGENTS.md) — frontmatter contract, versioning, and

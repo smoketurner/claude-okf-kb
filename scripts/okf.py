@@ -2,7 +2,7 @@
 # requires-python = ">=3.13"
 # dependencies = ["pyyaml==6.0.3"]
 # ///
-"""OKF bundle tooling: stamp, validate, and index concept files.
+"""OKF v0.2 bundle tooling: stamp, validate, and index concept files.
 
 Usage:
     uv run scripts/okf.py stamp <file>...
@@ -32,10 +32,12 @@ CONCEPT_TYPES = {
     "testing": "testing",
     "references": "reference",
 }
-ALLOWED_TYPES = set(CONCEPT_TYPES.values()) | {"doc", "index", "log"}
+ALLOWED_TYPES = set(CONCEPT_TYPES.values()) | {"doc"}
+STATUSES = {"draft", "stable", "deprecated"}
 VERSION_RE = re.compile(r"^v[1-9][0-9]*$")
 HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 LINK_RE = re.compile(r"\]\((/[^)#\s]+\.md)")
+DATE_HEADING_RE = re.compile(r"^## (\d{4}-\d{2}-\d{2})$")
 
 
 class KbError(Exception):
@@ -77,8 +79,8 @@ def load_frontmatter(fm_text: str, path: Path) -> dict:
     return fm
 
 
-def is_exempt(path: Path) -> bool:
-    """index.md and log.md are regenerated/append-only: no version/hash."""
+def is_reserved(path: Path) -> bool:
+    """index.md and log.md carry no concept frontmatter (OKF v0.2 §8, §9)."""
     return path.name in RESERVED
 
 
@@ -112,10 +114,6 @@ def stamp(path: Path) -> str:
 def expected_type(path: Path) -> str | None:
     """The type a file must declare based on its location, if constrained."""
     rel = path.relative_to(REPO_ROOT)
-    if path.name == "index.md":
-        return "index"
-    if path.name == "log.md":
-        return "log"
     if len(rel.parts) == 2 and rel.parts[0] in CONCEPT_TYPES:
         return CONCEPT_TYPES[rel.parts[0]]
     if len(rel.parts) == 1:
@@ -140,17 +138,59 @@ def head_version(path: Path) -> str | None:
     return str(version) if version is not None else None
 
 
+def validate_reserved(path: Path, text: str, errors: list[str]) -> None:
+    """index.md has no frontmatter (root may carry only okf_version); log.md is date-grouped."""
+    rel = path.relative_to(REPO_ROOT)
+    if path.name == "index.md":
+        if path.parent == REPO_ROOT:
+            if text.startswith("---\n"):
+                fm_text, _ = split_document(text, path)
+                fm = load_frontmatter(fm_text, path)
+                if set(fm) != {"okf_version"}:
+                    errors.append(
+                        f"{rel}: root index.md frontmatter may hold only okf_version"
+                    )
+                elif str(fm["okf_version"]) != "0.2":
+                    errors.append(f'{rel}: okf_version must be "0.2"')
+        elif text.startswith("---\n"):
+            errors.append(f"{rel}: index.md must not carry frontmatter")
+        return
+    if text.startswith("---\n"):
+        errors.append(f"{rel}: log.md must not carry frontmatter")
+    dates = [m.group(1) for m in map(DATE_HEADING_RE.match, text.splitlines()) if m]
+    if dates != sorted(dates, reverse=True):
+        errors.append(f"{rel}: log.md date headings must be newest first")
+    for line in text.splitlines():
+        if line.startswith("## ") and not DATE_HEADING_RE.match(line):
+            errors.append(f"{rel}: log.md heading {line!r} is not ## YYYY-MM-DD")
+
+
+def valid_datetime(value: object) -> bool:
+    if isinstance(value, datetime.datetime):
+        return True
+    if not isinstance(value, str):
+        return False
+    try:
+        datetime.datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
 def validate_file(
     path: Path, staged: bool, errors: list[str], warnings: list[str]
 ) -> None:
     text = path.read_text(encoding="utf-8")
+    rel = path.relative_to(REPO_ROOT)
     try:
+        if is_reserved(path):
+            validate_reserved(path, text, errors)
+            return
         fm_text, body = split_document(text, path)
         fm = load_frontmatter(fm_text, path)
     except KbError as exc:
         errors.append(str(exc))
         return
-    rel = path.relative_to(REPO_ROOT)
 
     ftype = fm.get("type")
     if not ftype or not isinstance(ftype, str):
@@ -164,42 +204,57 @@ def validate_file(
     if want is not None and ftype != want:
         errors.append(f"{rel}: type '{ftype}' but location requires '{want}'")
 
-    if not is_exempt(path):
-        version = str(fm.get("version", ""))
-        if not VERSION_RE.match(version):
-            errors.append(f"{rel}: version '{version}' does not match ^v[1-9][0-9]*$")
-        digest = str(fm.get("content_sha256", ""))
-        if not HASH_RE.match(digest):
-            errors.append(
-                f"{rel}: content_sha256 missing or not 64 lowercase hex chars"
-            )
-        elif digest != body_hash(body):
-            errors.append(
-                f"{rel}: content_sha256 does not match body (run okf.py stamp)"
-            )
-        ts = fm.get("timestamp")
-        try:
-            if isinstance(ts, str):
-                datetime.datetime.fromisoformat(ts)
-            elif not isinstance(ts, (datetime.date, datetime.datetime)):
-                raise TypeError(f"unsupported timestamp {ts!r}")
-        except (TypeError, ValueError):
-            errors.append(f"{rel}: timestamp is not ISO 8601")
-        if ftype in CONCEPT_TYPES.values() and not fm.get("sources"):
-            errors.append(f"{rel}: concept has no 'sources' provenance list")
-        if staged and VERSION_RE.match(version):
-            prev = head_version(path)
-            if prev is None:
-                if version != "v1":
-                    errors.append(f"{rel}: new file must start at v1, got {version}")
-            elif int(version[1:]) != int(prev[1:]) + 1:
-                errors.append(
-                    f"{rel}: version must bump {prev} -> v{int(prev[1:]) + 1}, got {version}"
-                )
+    version = str(fm.get("version", ""))
+    if not VERSION_RE.match(version):
+        errors.append(f"{rel}: version '{version}' does not match ^v[1-9][0-9]*$")
+    digest = str(fm.get("content_sha256", ""))
+    if not HASH_RE.match(digest):
+        errors.append(f"{rel}: content_sha256 missing or not 64 lowercase hex chars")
+    elif digest != body_hash(body):
+        errors.append(f"{rel}: content_sha256 does not match body (run okf.py stamp)")
 
-    if not fm.get("title") and ftype not in {"index", "log"}:
+    generated = fm.get("generated")
+    if not isinstance(generated, dict) or not isinstance(generated.get("by"), str):
+        errors.append(
+            f"{rel}: generated must be a mapping with 'by' (an actor) and 'at'"
+        )
+    elif not valid_datetime(generated.get("at")):
+        errors.append(f"{rel}: generated.at is not an ISO 8601 datetime")
+    verified = fm.get("verified")
+    if verified is not None:
+        entries = verified if isinstance(verified, list) else [verified]
+        for entry in entries:
+            if not isinstance(entry, dict) or not isinstance(entry.get("by"), str):
+                errors.append(f"{rel}: verified entries need 'by' (an actor) and 'at'")
+            elif not valid_datetime(entry.get("at")):
+                errors.append(f"{rel}: verified.at is not an ISO 8601 datetime")
+    status = fm.get("status")
+    if status is not None and status not in STATUSES:
+        errors.append(f"{rel}: status '{status}' not in {sorted(STATUSES)}")
+    if "stale_after" in fm and not valid_datetime(fm["stale_after"]):
+        errors.append(f"{rel}: stale_after is not an ISO 8601 datetime")
+
+    if ftype in CONCEPT_TYPES.values():
+        sources = fm.get("sources")
+        if not sources or not isinstance(sources, list):
+            errors.append(f"{rel}: concept has no 'sources' provenance list")
+        else:
+            for i, src in enumerate(sources):
+                if not isinstance(src, dict) or not src.get("resource"):
+                    errors.append(f"{rel}: sources[{i}] has no 'resource'")
+    if staged and VERSION_RE.match(version):
+        prev = head_version(path)
+        if prev is None:
+            if version != "v1":
+                errors.append(f"{rel}: new file must start at v1, got {version}")
+        elif int(version[1:]) != int(prev[1:]) + 1:
+            errors.append(
+                f"{rel}: version must bump {prev} -> v{int(prev[1:]) + 1}, got {version}"
+            )
+
+    if not fm.get("title"):
         warnings.append(f"{rel}: missing 'title'")
-    if not fm.get("description") and ftype not in {"index", "log"}:
+    if not fm.get("description"):
         warnings.append(f"{rel}: missing 'description'")
     for match in LINK_RE.finditer(body):
         target = REPO_ROOT / match.group(1).lstrip("/")
@@ -239,6 +294,7 @@ def staged_markdown_files() -> list[Path]:
 
 
 def regenerate_index(directory: Path) -> None:
+    """Write a frontmatter-free directory listing in the OKF v0.2 §8 shape."""
     entries = []
     for path in sorted(directory.glob("*.md")):
         if path.name in RESERVED:
@@ -247,12 +303,11 @@ def regenerate_index(directory: Path) -> None:
         fm = load_frontmatter(fm_text, path)
         title = fm.get("title", path.stem)
         desc = fm.get("description", "")
-        status = " *(superseded)*" if fm.get("status") == "superseded" else ""
-        entries.append(f"- [{title}](/{directory.name}/{path.name}){status} — {desc}")
+        status = " *(deprecated)*" if fm.get("status") == "deprecated" else ""
+        entries.append(f"* [{title}](/{directory.name}/{path.name}){status} - {desc}")
     listing = "\n".join(entries) if entries else "_No concepts yet._"
     directory.joinpath("index.md").write_text(
-        f"---\ntype: index\ntitle: {directory.name}\n---\n\n# {directory.name}\n\n{listing}\n",
-        encoding="utf-8",
+        f"# {directory.name}\n\n{listing}\n", encoding="utf-8"
     )
 
 
