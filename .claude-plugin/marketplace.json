@@ -1,0 +1,17 @@
+{
+  "name": "smoketurner",
+  "description": "Smoketurner's Claude Code plugins.",
+  "owner": {
+    "name": "Smoketurner",
+    "url": "https://github.com/smoketurner"
+  },
+  "plugins": [
+    {
+      "name": "okf-kb",
+      "source": "./",
+      "description": "Scaffold and continuously refresh an Open Knowledge Format knowledge base mined from local Claude Code session transcripts.",
+      "category": "productivity",
+      "tags": ["knowledge-base", "okf", "transcripts"]
+    }
+  ]
+}
