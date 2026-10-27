@@ -1,0 +1,22 @@
+{
+  "name": "okf-kb",
+  "version": "0.1.0",
+  "description": "Scaffold and continuously refresh an Open Knowledge Format knowledge base mined from local Claude Code session transcripts.",
+  "author": {
+    "name": "Smoketurner",
+    "url": "https://github.com/smoketurner"
+  },
+  "homepage": "https://github.com/smoketurner/claude-okf-kb",
+  "repository": "https://github.com/smoketurner/claude-okf-kb",
+  "keywords": [
+    "knowledge-base",
+    "okf",
+    "transcripts",
+    "memory",
+    "documentation"
+  ],
+  "skills": [
+    "./.claude/skills/"
+  ],
+  "license": "MIT"
+}
