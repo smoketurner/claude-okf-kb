@@ -2,7 +2,7 @@
 
 The deterministic half of the knowledge-base loop. The `/kb-refresh` skill drives them; every
 command runs from the knowledge-base repo root and reads `kb.config.json` for the project's
-source repositories and scratch directory. Requirements: `uv`, `jq`, `gitleaks`, `git`, `gh`.
+source repositories and scratch directory. Requirements: `uv`, `jq`, `gitleaks`, `git`, and either `gh` (logged in) or `curl` with `GITHUB_TOKEN`/`GH_TOKEN` set for opening the PR.
 
 | script | role |
 | --- | --- |

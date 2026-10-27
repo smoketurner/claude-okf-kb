@@ -61,7 +61,8 @@ scaffolder) so what remains is a plain knowledge-base repo.
 - `uv run scripts/okf.py validate` is clean and `git status` shows the scaffold.
 - `jq . kb.config.json` lists exactly the agreed repos; `.claude/settings.json` grants them.
 - Install the hooks: `prek install` (fall back to `pre-commit install` if prek is absent).
-- Confirm `jq`, `gitleaks`, and `uv` are on PATH — `refresh.py prepare` needs all three.
+- Confirm `jq`, `gitleaks`, and `uv` are on PATH — `refresh.py prepare` needs all three. Opening
+  the refresh PR needs either `gh` logged in or `GITHUB_TOKEN`/`GH_TOKEN` in the environment.
 
 Do not commit unless the user asks. Report what was created, then tell the user:
 

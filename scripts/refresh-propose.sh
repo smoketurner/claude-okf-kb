@@ -74,10 +74,44 @@ trap 'rm -f "$body"' EXIT
 git commit -F "$body"
 git push -u origin "$branch"
 
-if gh pr create --base "$BASE" --head "$branch" --title "KB refresh ${stamp}: ${summary}" --body-file "$body"; then
+# Open the PR with gh when it is installed and logged in; otherwise (cloud
+# sandboxes without the GitHub CLI) call the REST API directly with the token
+# in GITHUB_TOKEN or GH_TOKEN. Either way the branch is already pushed, so a
+# failure here only means the PR has to be opened by hand.
+title="KB refresh ${stamp}: ${summary}"
+open_pr() {
+  if command -v gh >/dev/null && gh auth status >/dev/null 2>&1; then
+    gh pr create --base "$BASE" --head "$branch" --title "$title" --body-file "$body"
+    return
+  fi
+  local token="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+  if [[ -z "$token" ]]; then
+    echo "refresh-propose: no gh login and no GITHUB_TOKEN/GH_TOKEN set" >&2
+    return 1
+  fi
+  # owner/repo from the origin URL, for both https://github.com/o/r(.git) and git@github.com:o/r(.git)
+  local slug
+  slug="$(git remote get-url origin | sed -E 's#^(https://github\.com/|git@github\.com:)##; s#\.git$##')"
+  local payload response url
+  payload="$(jq -n --arg t "$title" --arg h "$branch" --arg b "$BASE" --rawfile body "$body" \
+    '{title: $t, head: $h, base: $b, body: $body}')"
+  response="$(curl -sS -X POST "https://api.github.com/repos/${slug}/pulls" \
+    -H "Authorization: Bearer ${token}" \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    -d "$payload")"
+  url="$(jq -r '.html_url // empty' <<<"$response")"
+  if [[ -z "$url" ]]; then
+    jq -r '.message // .' <<<"$response" >&2
+    return 1
+  fi
+  echo "$url"
+}
+
+if open_pr; then
   echo "refresh-propose: PR opened for ${branch}"
 else
-  echo "refresh-propose: branch pushed but 'gh pr create' failed; open the PR manually for ${branch}" >&2
+  echo "refresh-propose: branch pushed but opening the PR failed; open it manually for ${branch}" >&2
 fi
 
 git checkout "$BASE"

@@ -21,7 +21,8 @@ that proposes every change as a pull request.
   (prepare, finalize), `digest.sh`, and `refresh-propose.sh`. See
   [scripts/README.md](scripts/README.md).
 
-Requirements: `uv`, `jq`, `gitleaks`, `git`, `gh`, and Claude Code. `prek` (or `pre-commit`)
+Requirements: `uv`, `jq`, `gitleaks`, `git`, Claude Code, and either `gh` (logged in) or `curl`
+with `GITHUB_TOKEN`/`GH_TOKEN` set for opening pull requests. `prek` (or `pre-commit`)
 for the hooks.
 
 ## Use as a plugin
