@@ -21,6 +21,7 @@ from pathlib import Path
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+OKF_VERSION = "0.2"
 RESERVED = {"index.md", "log.md"}
 CONCEPT_TYPES = {
     "architecture": "architecture",
@@ -36,17 +37,41 @@ ALLOWED_TYPES = set(CONCEPT_TYPES.values()) | {"doc"}
 STATUSES = {"draft", "stable", "deprecated"}
 VERSION_RE = re.compile(r"^v[1-9][0-9]*$")
 HASH_RE = re.compile(r"^[0-9a-f]{64}$")
-LINK_RE = re.compile(r"\]\((/[^)#\s]+\.md)")
-DATE_HEADING_RE = re.compile(r"^## (\d{4}-\d{2}-\d{2})$")
+# OKF v0.2 §7: `<producer>/<version>` for agents, `human:<id>`, `process:<id>`.
+ACTOR_RE = re.compile(r"^(?:human:\S+|process:\S+|[^\s/:]+/\S+)$")
+LINK_RE = re.compile(r"\]\(([^)\s]+\.md)(?:#[^)]*)?\)")
+INDEX_ENTRY_RE = re.compile(r"^\* \[[^\]]+\]\([^)\s]+\)(?: - .*)?$")
+LOG_DATE_RE = re.compile(r"^## (\d{4}-\d{2}-\d{2})$")
+CITATIONS_RE = re.compile(r"^#+\s*Citations\s*$", re.MULTILINE)
 
 
 class KbError(Exception):
     """A validation failure with a file path and reason."""
 
 
+class _Loader(yaml.SafeLoader):
+    """SafeLoader that keeps timestamps as the text the author wrote.
+
+    PyYAML's YAML 1.1 resolver turns `2026-06-30T14:00:00Z` into a datetime and
+    dumps it back as `2026-06-30 14:00:00+00:00`, which is not the ISO 8601 form
+    the spec requires. Dropping the resolver keeps every value a string, so the
+    validator checks the author's text and the stamp round-trips it unchanged.
+    """
+
+
+_Loader.yaml_implicit_resolvers = {
+    ch: [(tag, regexp) for tag, regexp in rs if tag != "tag:yaml.org,2002:timestamp"]
+    for ch, rs in yaml.SafeLoader.yaml_implicit_resolvers.items()
+}
+
+
+def has_frontmatter(text: str) -> bool:
+    return text.startswith("---\n")
+
+
 def split_document(text: str, path: Path) -> tuple[str, str]:
     """Split a concept file into (frontmatter_yaml, body)."""
-    if not text.startswith("---\n"):
+    if not has_frontmatter(text):
         raise KbError(f"{path}: missing opening '---' frontmatter delimiter")
     end = text.find("\n---\n", 4)
     if end == -1:
@@ -71,7 +96,7 @@ def body_hash(body: str) -> str:
 
 def load_frontmatter(fm_text: str, path: Path) -> dict:
     try:
-        fm = yaml.safe_load(fm_text)
+        fm = yaml.load(fm_text, Loader=_Loader)
     except yaml.YAMLError as exc:
         raise KbError(f"{path}: unparseable YAML frontmatter: {exc}") from exc
     if not isinstance(fm, dict):
@@ -79,9 +104,41 @@ def load_frontmatter(fm_text: str, path: Path) -> dict:
     return fm
 
 
+def read_frontmatter(path: Path) -> dict:
+    fm_text, _ = split_document(path.read_text(encoding="utf-8"), path)
+    return load_frontmatter(fm_text, path)
+
+
 def is_reserved(path: Path) -> bool:
-    """index.md and log.md carry no concept frontmatter (OKF v0.2 §8, §9)."""
+    """index.md and log.md carry no frontmatter and are validated structurally."""
     return path.name in RESERVED
+
+
+def parse_datetime(value: object) -> datetime.datetime | None:
+    """An ISO 8601 datetime with an explicit UTC offset (OKF v0.2 §5), else None."""
+    if not isinstance(value, str) or "T" not in value:
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def normalize_verified(fm: dict) -> list:
+    """`verified` as a list; a bare mapping is a one-element list (§5.2)."""
+    verified = fm.get("verified")
+    if verified is None:
+        return []
+    if isinstance(verified, dict):
+        return [verified]
+    return verified if isinstance(verified, list) else [verified]
+
+
+def latest_verified(fm: dict) -> str:
+    """ISO text of the newest `verified[].at`, or '' when unverified."""
+    ats = [e.get("at") for e in normalize_verified(fm) if isinstance(e, dict)]
+    return max((a for a in ats if isinstance(a, str)), default="")
 
 
 def stamp(path: Path) -> str:
@@ -138,59 +195,54 @@ def head_version(path: Path) -> str | None:
     return str(version) if version is not None else None
 
 
-def validate_reserved(path: Path, text: str, errors: list[str]) -> None:
-    """index.md has no frontmatter (root may carry only okf_version); log.md is date-grouped."""
-    rel = path.relative_to(REPO_ROOT)
-    if path.name == "index.md":
-        if path.parent == REPO_ROOT:
-            if text.startswith("---\n"):
-                fm_text, _ = split_document(text, path)
-                fm = load_frontmatter(fm_text, path)
-                if set(fm) != {"okf_version"}:
-                    errors.append(
-                        f"{rel}: root index.md frontmatter may hold only okf_version"
-                    )
-                elif str(fm["okf_version"]) != "0.2":
-                    errors.append(f'{rel}: okf_version must be "0.2"')
-        elif text.startswith("---\n"):
-            errors.append(f"{rel}: index.md must not carry frontmatter")
+def resolve_link(target: str, path: Path) -> Path | None:
+    """The file a markdown link names, or None for links outside the bundle."""
+    if "://" in target:
+        return None
+    if target.startswith("/"):
+        return REPO_ROOT / target.lstrip("/")
+    return (path.parent / target).resolve()
+
+
+def check_links(body: str, path: Path, rel: Path, warnings: list[str]) -> None:
+    for match in LINK_RE.finditer(body):
+        target = resolve_link(match.group(1), path)
+        if target is not None and not target.exists():
+            warnings.append(f"{rel}: broken link {match.group(1)}")
+
+
+def check_actor_event(
+    event: object, label: str, rel: Path, errors: list[str], *, require_at: bool
+) -> None:
+    if not isinstance(event, dict):
+        errors.append(f"{rel}: {label} must be a mapping with 'by' and 'at'")
         return
-    if text.startswith("---\n"):
-        errors.append(f"{rel}: log.md must not carry frontmatter")
-    dates = [m.group(1) for m in map(DATE_HEADING_RE.match, text.splitlines()) if m]
-    if dates != sorted(dates, reverse=True):
-        errors.append(f"{rel}: log.md date headings must be newest first")
-    for line in text.splitlines():
-        if line.startswith("## ") and not DATE_HEADING_RE.match(line):
-            errors.append(f"{rel}: log.md heading {line!r} is not ## YYYY-MM-DD")
+    by = event.get("by")
+    if not isinstance(by, str) or not ACTOR_RE.match(by):
+        errors.append(
+            f"{rel}: {label}.by {by!r} is not an actor "
+            "(<producer>/<version>, human:<id>, or process:<id>)"
+        )
+    at = event.get("at")
+    if at is None and not require_at:
+        return
+    if parse_datetime(at) is None:
+        errors.append(
+            f"{rel}: {label}.at {at!r} is not an ISO 8601 datetime with a UTC offset"
+        )
 
 
-def valid_datetime(value: object) -> bool:
-    if isinstance(value, datetime.datetime):
-        return True
-    if not isinstance(value, str):
-        return False
-    try:
-        datetime.datetime.fromisoformat(value)
-    except ValueError:
-        return False
-    return True
-
-
-def validate_file(
+def validate_concept(
     path: Path, staged: bool, errors: list[str], warnings: list[str]
 ) -> None:
     text = path.read_text(encoding="utf-8")
-    rel = path.relative_to(REPO_ROOT)
     try:
-        if is_reserved(path):
-            validate_reserved(path, text, errors)
-            return
         fm_text, body = split_document(text, path)
         fm = load_frontmatter(fm_text, path)
     except KbError as exc:
         errors.append(str(exc))
         return
+    rel = path.relative_to(REPO_ROOT)
 
     ftype = fm.get("type")
     if not ftype or not isinstance(ftype, str):
@@ -213,35 +265,57 @@ def validate_file(
     elif digest != body_hash(body):
         errors.append(f"{rel}: content_sha256 does not match body (run okf.py stamp)")
 
-    generated = fm.get("generated")
-    if not isinstance(generated, dict) or not isinstance(generated.get("by"), str):
-        errors.append(
-            f"{rel}: generated must be a mapping with 'by' (an actor) and 'at'"
-        )
-    elif not valid_datetime(generated.get("at")):
-        errors.append(f"{rel}: generated.at is not an ISO 8601 datetime")
-    verified = fm.get("verified")
-    if verified is not None:
-        entries = verified if isinstance(verified, list) else [verified]
-        for entry in entries:
-            if not isinstance(entry, dict) or not isinstance(entry.get("by"), str):
-                errors.append(f"{rel}: verified entries need 'by' (an actor) and 'at'")
-            elif not valid_datetime(entry.get("at")):
-                errors.append(f"{rel}: verified.at is not an ISO 8601 datetime")
+    if "timestamp" in fm:
+        errors.append(f"{rel}: 'timestamp' is superseded by 'generated.at' (OKF v0.2)")
+    if "generated" not in fm:
+        errors.append(f"{rel}: missing 'generated' ({{by, at}})")
+    else:
+        check_actor_event(fm["generated"], "generated", rel, errors, require_at=True)
+
+    for i, event in enumerate(normalize_verified(fm)):
+        check_actor_event(event, f"verified[{i}]", rel, errors, require_at=True)
+
     status = fm.get("status")
     if status is not None and status not in STATUSES:
         errors.append(f"{rel}: status '{status}' not in {sorted(STATUSES)}")
-    if "stale_after" in fm and not valid_datetime(fm["stale_after"]):
-        errors.append(f"{rel}: stale_after is not an ISO 8601 datetime")
+    superseded_by = fm.get("superseded_by")
+    if superseded_by is not None:
+        if status != "deprecated":
+            errors.append(f"{rel}: 'superseded_by' requires status: deprecated")
+        target = resolve_link(str(superseded_by), path)
+        if target is None or not target.exists():
+            warnings.append(f"{rel}: superseded_by target {superseded_by} not found")
+    if "stale_after" in fm and parse_datetime(fm["stale_after"]) is None:
+        errors.append(
+            f"{rel}: stale_after {fm['stale_after']!r} is not an ISO 8601 datetime "
+            "with a UTC offset"
+        )
 
-    if ftype in CONCEPT_TYPES.values():
-        sources = fm.get("sources")
-        if not sources or not isinstance(sources, list):
-            errors.append(f"{rel}: concept has no 'sources' provenance list")
+    sources = fm.get("sources")
+    if ftype in CONCEPT_TYPES.values() and not sources:
+        errors.append(f"{rel}: concept has no 'sources' provenance list")
+    if sources is not None:
+        if not isinstance(sources, list):
+            errors.append(f"{rel}: 'sources' must be a list")
         else:
-            for i, src in enumerate(sources):
-                if not isinstance(src, dict) or not src.get("resource"):
+            for i, entry in enumerate(sources):
+                if not isinstance(entry, dict) or not entry.get("resource"):
                     errors.append(f"{rel}: sources[{i}] has no 'resource'")
+                    continue
+                lm = entry.get("last_modified")
+                if lm is not None and parse_datetime(lm) is None:
+                    errors.append(
+                        f"{rel}: sources[{i}].last_modified {lm!r} is not an ISO 8601 "
+                        "datetime with a UTC offset"
+                    )
+                author = entry.get("author")
+                if author is not None and not ACTOR_RE.match(str(author)):
+                    errors.append(
+                        f"{rel}: sources[{i}].author {author!r} is not an actor"
+                    )
+    if CITATIONS_RE.search(body):
+        errors.append(f"{rel}: '# Citations' body list is superseded by 'sources'")
+
     if staged and VERSION_RE.match(version):
         prev = head_version(path)
         if prev is None:
@@ -256,10 +330,69 @@ def validate_file(
         warnings.append(f"{rel}: missing 'title'")
     if not fm.get("description"):
         warnings.append(f"{rel}: missing 'description'")
-    for match in LINK_RE.finditer(body):
-        target = REPO_ROOT / match.group(1).lstrip("/")
-        if not target.exists():
-            warnings.append(f"{rel}: broken bundle-relative link {match.group(1)}")
+    check_links(body, path, rel, warnings)
+
+
+def validate_index(path: Path, errors: list[str], warnings: list[str]) -> None:
+    """An index.md is frontmatter-free list sections; the root one declares okf_version (§8, §12)."""
+    text = path.read_text(encoding="utf-8")
+    rel = path.relative_to(REPO_ROOT)
+    body = text
+    if has_frontmatter(text):
+        if path.parent != REPO_ROOT:
+            errors.append(f"{rel}: index.md must not carry frontmatter")
+            return
+        try:
+            fm_text, body = split_document(text, path)
+            fm = load_frontmatter(fm_text, path)
+        except KbError as exc:
+            errors.append(str(exc))
+            return
+        if set(fm) != {"okf_version"}:
+            errors.append(f"{rel}: root index frontmatter may carry only okf_version")
+        if str(fm.get("okf_version")) != OKF_VERSION:
+            errors.append(f'{rel}: okf_version must be "{OKF_VERSION}"')
+    elif path.parent == REPO_ROOT:
+        errors.append(f'{rel}: root index.md must declare okf_version: "{OKF_VERSION}"')
+    for line in body.splitlines():
+        if line.startswith(("* [", "- [")) and not INDEX_ENTRY_RE.match(line):
+            errors.append(
+                f"{rel}: index entry must be '* [Title](link) - description': {line}"
+            )
+    check_links(body, path, rel, warnings)
+
+
+def validate_log(path: Path, errors: list[str], warnings: list[str]) -> None:
+    """A log.md is frontmatter-free, date-grouped under ISO headings, newest first (§9)."""
+    text = path.read_text(encoding="utf-8")
+    rel = path.relative_to(REPO_ROOT)
+    if has_frontmatter(text):
+        errors.append(f"{rel}: log.md must not carry frontmatter")
+        return
+    dates: list[str] = []
+    for line in text.splitlines():
+        if line.startswith("## "):
+            match = LOG_DATE_RE.match(line)
+            if match is None:
+                errors.append(f"{rel}: log heading must be '## YYYY-MM-DD': {line}")
+            else:
+                dates.append(match.group(1))
+    if dates != sorted(dates, reverse=True):
+        errors.append(f"{rel}: log date headings must be newest first")
+    if len(dates) != len(set(dates)):
+        errors.append(f"{rel}: log has a repeated date heading")
+    check_links(text, path, rel, warnings)
+
+
+def validate_file(
+    path: Path, staged: bool, errors: list[str], warnings: list[str]
+) -> None:
+    if path.name == "index.md":
+        validate_index(path, errors, warnings)
+    elif path.name == "log.md":
+        validate_log(path, errors, warnings)
+    else:
+        validate_concept(path, staged, errors, warnings)
 
 
 EXCLUDED_DIRS = {".git", ".claude", ".claude-plugin", "scripts", "template", ".refresh"}
@@ -294,17 +427,16 @@ def staged_markdown_files() -> list[Path]:
 
 
 def regenerate_index(directory: Path) -> None:
-    """Write a frontmatter-free directory listing in the OKF v0.2 §8 shape."""
+    """Write the directory's index.md in the §8 shape: one section, relative links."""
     entries = []
     for path in sorted(directory.glob("*.md")):
         if path.name in RESERVED:
             continue
-        fm_text, _ = split_document(path.read_text(encoding="utf-8"), path)
-        fm = load_frontmatter(fm_text, path)
+        fm = read_frontmatter(path)
         title = fm.get("title", path.stem)
         desc = fm.get("description", "")
         status = " *(deprecated)*" if fm.get("status") == "deprecated" else ""
-        entries.append(f"* [{title}](/{directory.name}/{path.name}){status} - {desc}")
+        entries.append(f"* [{title}]({path.name}){status} - {desc}")
     listing = "\n".join(entries) if entries else "_No concepts yet._"
     directory.joinpath("index.md").write_text(
         f"# {directory.name}\n\n{listing}\n", encoding="utf-8"

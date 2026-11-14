@@ -1,2 +1,2 @@
-# Runtime logs are local; watermarks.json, usage.json and review.json are tracked state.
+# Runtime logs are local; watermarks.json and usage.json are tracked state.
 *.log

@@ -7,6 +7,6 @@ source repositories and scratch directory. Requirements: `uv`, `jq`, `gitleaks`,
 | script | role |
 | --- | --- |
 | `okf.py` | `stamp`, `validate`, `index` — the bundle contract enforcer (also the pre-commit hook) |
-| `refresh.py` | `prepare` digests new transcripts (subagent transcripts included), `.local/` artifacts, and memory files into a run dir; `finalize` promotes watermarks and bookkeeping |
+| `refresh.py` | `prepare` digests new transcripts (subagent transcripts included), `.local/` artifacts, and memory files into a run dir and picks the least-recently-verified concepts for review; `finalize` promotes watermarks, merges usage, deletes pruned concepts, and records the run in `log.md` |
 | `digest.sh` | one transcript (or subagent transcript) → mineable markdown digest |
 | `refresh-propose.sh` | commit the working tree on a branch and open the PR (or commit bookkeeping-only runs straight to the base branch) |
