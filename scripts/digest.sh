@@ -19,10 +19,12 @@ f="$1"
 session_id=$(basename "$f" .jsonl)
 keep_sidechain=false
 agent_line=""
+provenance="$f"
 meta="${f%.jsonl}.meta.json"
 if [[ "$session_id" == agent-* && -f "$meta" ]]; then
   keep_sidechain=true
   parent=$(basename "$(dirname "$(dirname "$f")")")
+  provenance="$(dirname "$(dirname "$(dirname "$f")")")/${parent}.jsonl"
   agent_line=$(jq -r --arg parent "$parent" \
     '"parent: \($parent) | agent: \(.customAgentType // .agentType // "?") | task: \(.description // "?")"' \
     "$meta")
@@ -39,13 +41,14 @@ meta_tsv=$(jq -rn '
   | [(.first // "?"), (.last // "?"), (.slug // "none"),
      (.branches | unique | join(",") | if . == "" then "none" else . end)]
   | @tsv' "$f")
-IFS=$'\t' read -r first_ts last_ts slug branches <<<"$meta_tsv"
+IFS=$'\t' read -r first_ts last_ts slug branches <<< "$meta_tsv"
 
 printf '# SESSION %s\n' "$session_id"
 printf 'dates: %s .. %s | slug: %s | branches: %s\n' \
   "${first_ts:-?}" "${last_ts:-?}" "${slug:-none}" "${branches:-none}"
 if [[ -n "$agent_line" ]]; then printf '%s\n' "$agent_line"; fi
-printf '\n'
+tilde='~'
+printf 'provenance: %s\n\n' "${provenance/#"$HOME"/$tilde}"
 
 jq -r --argjson keep "$keep_sidechain" '
   select($keep or .isSidechain != true)

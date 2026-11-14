@@ -41,7 +41,7 @@ fi
 
 stamp="$(date +%Y%m%d-%H%M%S)"
 branch="kb/refresh-${stamp}"
-summary="$(grep -E '^- [0-9]{4}-[0-9]{2}-[0-9]{2} — Refresh' log.md | tail -1 | sed 's/^- //')"
+summary="$(grep -E '^\* \*\*Refresh\*\*: ' log.md | head -1 | sed 's/^\* \*\*Refresh\*\*: /Refresh run: /')"
 [ -n "$summary" ] || summary="Knowledge-base refresh ${stamp}"
 
 git checkout -b "$branch"
@@ -68,7 +68,7 @@ trap 'rm -f "$body"' EXIT
   echo "- [ ] No stale claim presented as current (recency wins on contradictions)"
   echo "- [ ] Tool-use patterns captured as gotchas/conventions are real and durable"
   echo "- [ ] No secrets or credential values in any diff"
-  echo "- [ ] Reviewed-slice outcomes are right: updates accurate, deletions/supersedes justified"
+  echo "- [ ] Reviewed-slice outcomes are right: verified entries, updates, deletions and deprecations justified"
 } >"$body"
 
 git commit -F "$body"

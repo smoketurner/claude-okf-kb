@@ -72,9 +72,9 @@ Bundles produced by this template conform to
 (§11 conformance): every concept has parseable frontmatter with a `type`, `index.md` files carry
 no frontmatter (the root one holds only `okf_version: "0.2"`), and `log.md` is a newest-first
 list of `## YYYY-MM-DD` groups. Concepts use the spec's `generated`, `verified`, `status`
-(`draft | stable | deprecated`), and `sources[].resource` families. Four keys are extensions the
-spec permits: `version` and `content_sha256` (the compare-and-set token), `supersedes` (link from a
-deprecated decision to its replacement), and `project` on a source entry. `okf.py validate`
+(`draft | stable | deprecated`), and `sources[].resource` families. Five keys are extensions the
+spec permits: `version` and `content_sha256` (the compare-and-set token), `superseded_by` (link from
+a deprecated decision to its replacement), and `project` and `path` on a source entry. `okf.py validate`
 enforces all of this, so a bundle that validates is conformant.
 
 ## kb.config.json

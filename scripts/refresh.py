@@ -25,14 +25,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-import yaml
+from okf import latest_verified, read_frontmatter
 
 KB = Path(__file__).resolve().parent.parent
 CONFIG = KB / "kb.config.json"
 DIGEST = KB / "scripts" / "digest.sh"
 WATERMARKS = KB / ".refresh" / "watermarks.json"
 USAGE = KB / ".refresh" / "usage.json"
-REVIEW = KB / ".refresh" / "review.json"
 PROJECTS = Path.home() / ".claude" / "projects"
 MAX_BATCH_BYTES = 200_000
 MAX_BATCH_SESSIONS = 60
@@ -46,8 +45,23 @@ DIRS = [
     "testing",
     "references",
 ]
-CONCEPT_PATH_RE = re.compile(
-    rf"{re.escape(str(KB))}/(?:{'|'.join(DIRS)})/[A-Za-z0-9._-]+\.md"
+CONCEPT_GLOB = rf"(?:{'|'.join(DIRS)})/[A-Za-z0-9._-]+\.md"
+# The bundle root as a tool call from any checkout names it: the absolute path, its
+# `~/` form, the `../<kb-dir>` sibling form source repos' docs use, or a `$KB` variable.
+KB_ROOT = "|".join(
+    [re.escape(str(KB)), rf"\.\./{re.escape(KB.name)}", r"\$\{?KB\}?"]
+    + (
+        [rf"~/{re.escape(str(KB.relative_to(Path.home())))}"]
+        if KB.is_relative_to(Path.home())
+        else []
+    )
+)
+KB_ROOT_RE = re.compile(rf"(?:{KB_ROOT})(?![A-Za-z0-9._-])")
+CONCEPT_PATH_RE = re.compile(rf"(?:{KB_ROOT})/({CONCEPT_GLOB})")
+# A bundle-relative concept path at the start of a search-result line or token, as
+# `rg -l` prints it when run from inside the bundle (`decisions/x.md`, `./decisions/x.md`).
+RESULT_PATH_RE = re.compile(
+    rf"(?:^|(?<=[\s'\"]))(?:\./)?({CONCEPT_GLOB})", re.MULTILINE
 )
 B64_RUN = re.compile(r"[A-Za-z0-9+/=_-]{80,}")
 PEM = re.compile(
@@ -145,6 +159,12 @@ def discover(cfg: dict, watermarks: dict[str, str]) -> dict[str, list[dict]]:
                         {"session": name, "path": str(path), "ts": ts}
                     )
     return new
+
+
+def tilde(path: str) -> str:
+    """A path with the home directory written as `~`, as cited in `sources[].path`."""
+    home = str(Path.home())
+    return "~" + path[len(home) :] if path.startswith(home + "/") else path
 
 
 def artifact_ts(path: Path) -> str:
@@ -294,9 +314,7 @@ def write_kb_manifest(dest: Path) -> list[tuple[str, dict]]:
         for path in sorted((KB / d).glob("*.md")):
             if path.name == "index.md":
                 continue
-            text = path.read_text(encoding="utf-8")
-            end = text.find("\n---\n", 4)
-            fm = yaml.safe_load(text[4:end]) if end != -1 else {}
+            fm = read_frontmatter(path)
             rel = str(path.relative_to(KB))
             rows.append(
                 f"{rel}\t{fm.get('type', '')}\t{fm.get('title', '')}\t{fm.get('description', '')}"
@@ -306,22 +324,18 @@ def write_kb_manifest(dest: Path) -> list[tuple[str, dict]]:
     return concepts
 
 
-def select_review(
-    concepts: list[tuple[str, dict]], review_state: dict[str, str], count: int
-) -> list[str]:
+def select_review(concepts: list[tuple[str, dict]], count: int) -> list[str]:
     """The least-recently-verified concepts, due for a staleness review this run.
 
-    A concept's last-verified date is the later of its recorded review date and its
-    own generated.at — a recent CAS update already re-verified it against the source.
+    A concept's last-verified instant is the later of its newest `verified[].at` and
+    its `generated.at` — a recent CAS update already re-verified it against the source.
     """
     due: list[tuple[str, str]] = []
     for rel, fm in concepts:
         if fm.get("status") == "deprecated":
             continue
-        generated = fm.get("generated") or {}
-        ts = generated.get("at") if isinstance(generated, dict) else None
-        ts = ts.isoformat() if isinstance(ts, datetime.datetime) else str(ts or "")
-        due.append((max(review_state.get(rel, ""), ts[:10]), rel))
+        generated_at = str((fm.get("generated") or {}).get("at") or "")
+        due.append((max(latest_verified(fm), generated_at), rel))
     due.sort()
     return [rel for _, rel in due[:count]]
 
@@ -373,25 +387,37 @@ def _tool_parts(path: Path) -> list[dict]:
 
 
 def extract_kb_reads(parts: list[dict]) -> set[str]:
-    """Repo-relative KB concept paths one session read via Read, Grep, or Bash."""
-    prefix = len(str(KB)) + 1
+    """Repo-relative KB concept paths one session read via Read, Grep, or Bash.
+
+    A concept counts when a call names its path, and also when a Grep or Bash call
+    that targets the bundle (a search such as `rg -il term ../<kb-dir>`) returns it:
+    agents mostly consult the bundle by searching, and the hits are what they read.
+    Directory indexes are skipped, and a result path counts only if the concept exists.
+    """
     reads: set[str] = set()
+    searches: set[str] = set()
     for p in parts:
         if p.get("type") != "tool_use":
             continue
         inp = p.get("input")
         if not isinstance(inp, dict):
             continue
+        name = p.get("name", "")
         text = {
             "Read": str(inp.get("file_path", "")),
             "Grep": str(inp.get("path", "")),
             "Bash": str(inp.get("command", "")),
-        }.get(p.get("name", ""), "")
-        for hit in CONCEPT_PATH_RE.findall(text):
-            rel = hit[prefix:]
-            if not rel.endswith("/index.md"):
-                reads.add(rel)
-    return reads
+        }.get(name, "")
+        reads.update(CONCEPT_PATH_RE.findall(text))
+        if name in {"Grep", "Bash"} and KB_ROOT_RE.search(text):
+            searches.add(p.get("id", ""))
+    for p in parts:
+        if p.get("type") != "tool_result" or p.get("tool_use_id") not in searches:
+            continue
+        text = _text_of(p.get("content"))
+        hits = CONCEPT_PATH_RE.findall(text) + RESULT_PATH_RE.findall(text)
+        reads.update(rel for rel in hits if (KB / rel).is_file())
+    return {rel for rel in reads if not rel.endswith("/index.md")}
 
 
 def extract_tools(parts: list[dict]) -> dict:
@@ -530,7 +556,8 @@ def cmd_prepare(cfg: dict, run_dir: Path) -> None:
             out = repo_dir / ("local--" + a["relpath"].replace("/", "--"))
             digest = (
                 f"# LOCAL ARTIFACT {repo}/.local/{a['relpath']}\n"
-                f"modified: {a['ts']}\n\n"
+                f"modified: {a['ts']}\n"
+                f"provenance: {tilde(a['path'])}\n\n"
                 + Path(a["path"]).read_text(encoding="utf-8", errors="replace")
             )
             out.write_text(digest, encoding="utf-8")
@@ -554,7 +581,8 @@ def cmd_prepare(cfg: dict, run_dir: Path) -> None:
             out = repo_dir / f"memory--{m['name']}"
             digest = (
                 f"# MEMORY FILE {repo}/memory/{m['name']}\n"
-                f"modified: {m['ts']}\n\n"
+                f"modified: {m['ts']}\n"
+                f"provenance: {tilde(m['path'])}\n\n"
                 + Path(m["path"]).read_text(encoding="utf-8", errors="replace")
             )
             out.write_text(digest, encoding="utf-8")
@@ -602,7 +630,7 @@ def cmd_prepare(cfg: dict, run_dir: Path) -> None:
         "kb_concepts": len(concepts),
         "usage": str(usage_path),
         "kb_reads": len(usage_counts),
-        "review": select_review(concepts, load_json(REVIEW), cfg["review_slice"]),
+        "review": select_review(concepts, cfg["review_slice"]),
         "tool_report": str(tool_report) if tool_report else None,
         "tool_calls": sum(t["calls"] for t in tools_agg["by_tool"].values()),
         "tool_errors": sum(t["errors"] for t in tools_agg["by_tool"].values()),
@@ -661,15 +689,6 @@ def merge_usage(run_dir: Path, today: str) -> None:
         + "\n",
         encoding="utf-8",
     )
-
-
-def merge_review(reviewed: list[str], today: str) -> None:
-    """Record review dates and drop entries for concepts that no longer exist."""
-    state = load_json(REVIEW)
-    for rel in reviewed:
-        state[rel] = today
-    state = {rel: d for rel, d in sorted(state.items()) if (KB / rel).exists()}
-    REVIEW.write_text(json.dumps(state, indent=1) + "\n", encoding="utf-8")
 
 
 def log_entry(metrics: dict) -> str:
@@ -734,7 +753,6 @@ def cmd_finalize(run_dir: Path) -> None:
     today = datetime.date.today().isoformat()
     apply_pruned(metrics.get("pruned", []))
     merge_usage(run_dir, today)
-    merge_review(metrics.get("reviewed", []), today)
     entry = log_entry(metrics)
     append_log(KB / "log.md", today, entry)
     print(f"watermarks promoted; log.md appended: {entry}")
