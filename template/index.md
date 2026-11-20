@@ -1,5 +1,7 @@
 ---
-okf_version: "0.2"
+okf_version: "0.3"
+title: "{{TITLE}} knowledge base"
+description: "Durable decisions, gotchas, conventions, and runbooks mined from Claude Code sessions building {{TITLE}}. Use it before working in {{REPOS}}."
 ---
 
 # {{TITLE}} knowledge base

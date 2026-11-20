@@ -1,6 +1,6 @@
 {
   "name": "okf-kb",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Scaffold and continuously refresh an Open Knowledge Format knowledge base mined from local Claude Code session transcripts.",
   "author": {
     "name": "Smoketurner",

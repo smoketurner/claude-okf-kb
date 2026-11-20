@@ -11,7 +11,7 @@ generated: { by: process:kb-init, at: {{DATE}}T00:00:00Z }
 
 # Agent protocol
 
-This repository is an [Open Knowledge Format v0.2](https://github.com/GoogleCloudPlatform/open-knowledge-format/blob/main/SPEC.md)
+This repository is an [Open Knowledge Format v0.3](https://github.com/open-knowledge-format/open-knowledge-format/blob/main/SPEC.md)
 bundle holding durable knowledge from building {{TITLE}} ({{REPOS}}). Start at
 [index.md](/index.md) for the bundle map. Read the directory `index.md` files for progressive
 disclosure; open concept files only when relevant.
@@ -28,20 +28,27 @@ concept is its repo scope: {{SCOPES}}. Add a scope here when a new source reposi
 Every `.md` file except `index.md` and `log.md` carries YAML frontmatter with `type`, `title`,
 `description`, `version` (`^v[1-9][0-9]*$`), `content_sha256`, `tags`, `generated`, and — for
 concepts — a `sources` provenance list. Optional: `verified`, `status`, `superseded_by`,
-`stale_after`. `index.md` and `log.md` carry no frontmatter at all (the root `index.md` holds only
-`okf_version`). `version`, `content_sha256`, `superseded_by`, and the `project` and `path` keys on
-a source entry are this bundle's extensions to the spec; everything else is OKF v0.2 (§5 and §7).
+`stale_after`. `log.md` and directory `index.md` files carry no frontmatter at all; the root
+`index.md` holds only bundle metadata (`okf_version`, `title`, `description`, optionally `license`).
+`version`, `content_sha256`, and the `project` and `path` keys on a source entry are this bundle's
+extensions to the spec; everything else is OKF v0.3 (§5, §7, §8.1). The spec asks new extension
+keys to be named `x-<producer>-<name>`; these names predate that advice and are kept so existing
+bundles and the compare-and-set protocol keep working. Any new extension key uses the `x-okfkb-`
+prefix.
 
 - `generated: {by, at}` records who produced the current content and when it last meaningfully
   changed (`at` is an ISO 8601 datetime with an explicit offset, e.g. `{{DATE}}T00:00:00Z`).
   Actors follow the spec's convention: `<producer>/<version>` for an agent
   (`kb-refresh/<model-id>` for the refresh loop, `claude-code/<model-id>` for any other agent
-  session), `human:<id>` for a person, `process:<id>` for a script. Keep `at` unchanged on a
-  frontmatter-only edit; a content change sets it to the edit's date.
+  session), `human:<id>` for a person, `team:<id>` for a group, `process:<id>` for a script. Only
+  `human:` counts as a human review. Keep `at` unchanged on a frontmatter-only edit; a content
+  change sets it to the edit's date.
 - `verified` is a list of `{by, at}` events recording that someone confirmed the concept against
   the live source without changing it. The refresh loop's staleness review appends one per
   concept it checked and found accurate; a `human:` entry makes the concept human-reviewed.
-  Verification is independent of `generated.at`.
+  An event counts toward the trust tier only while its `at` is at or after `generated.at`
+  (OKF v0.3 §5.3), so a content change through CAS drops the concept back to unverified until
+  someone checks it again. Keep the older events as history.
 - `sources` entries are `{resource, path, last_modified, project}`. `resource` is the portable
   descriptor of the source: `session:<uuid>` for a transcript, `memory:<file>.md` for a memory
   file, `<repo>/.local/<relpath>` for an artifact. `path` is where that source lives on the
@@ -50,8 +57,10 @@ a source entry are this bundle's extensions to the spec; everything else is OKF 
   loop greps `resource` values to find the concept that already cites a source, so keep them in
   exactly these forms.
 - `status` is `draft`, `stable` (the default when absent) or `deprecated`; a deprecated decision
-  names its replacement in `superseded_by` (bundle-relative link).
-- `stale_after` (optional, ISO 8601 datetime) marks when a dated claim should be re-checked —
+  names its replacement in `superseded_by`, written as a root-absolute path
+  (`/decisions/<slug>.md`); a path without a leading `/` resolves from the concept's directory.
+- `stale_after` (optional, an ISO 8601 datetime with offset or a `YYYY-MM-DD` date meaning the
+  start of that day in UTC) marks when a dated claim should be re-checked —
   use it on absence claims ("as of {{DATE}} the CLI supports only X") instead of hoping a reader
   notices the date.
 
