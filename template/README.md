@@ -16,7 +16,7 @@ across these repositories:
 
 {{REPO_PATHS}}
 
-- Format: [Open Knowledge Format v0.2](https://github.com/GoogleCloudPlatform/open-knowledge-format/blob/main/SPEC.md) —
+- Format: [Open Knowledge Format v0.3](https://github.com/open-knowledge-format/open-knowledge-format/blob/main/SPEC.md) —
   markdown concepts with YAML frontmatter, one file per concept.
 - Start here: [index.md](index.md) (bundle map) → per-directory `index.md` listings.
 - Contributing (human or agent): [AGENTS.md](AGENTS.md) — frontmatter contract, versioning, and

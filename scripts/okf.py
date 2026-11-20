@@ -2,7 +2,7 @@
 # requires-python = ">=3.13"
 # dependencies = ["pyyaml==6.0.3"]
 # ///
-"""OKF v0.2 bundle tooling: stamp, validate, and index concept files.
+"""OKF v0.3 bundle tooling: stamp, validate, and index concept files.
 
 Usage:
     uv run scripts/okf.py stamp <file>...
@@ -21,7 +21,7 @@ from pathlib import Path
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-OKF_VERSION = "0.2"
+OKF_VERSION = "0.3"
 RESERVED = {"index.md", "log.md"}
 CONCEPT_TYPES = {
     "architecture": "architecture",
@@ -37,8 +37,11 @@ ALLOWED_TYPES = set(CONCEPT_TYPES.values()) | {"doc"}
 STATUSES = {"draft", "stable", "deprecated"}
 VERSION_RE = re.compile(r"^v[1-9][0-9]*$")
 HASH_RE = re.compile(r"^[0-9a-f]{64}$")
-# OKF v0.2 §7: `<producer>/<version>` for agents, `human:<id>`, `process:<id>`.
-ACTOR_RE = re.compile(r"^(?:human:\S+|process:\S+|[^\s/:]+/\S+)$")
+# OKF v0.3 §7: `<producer>/<version>` for agents and tools, `<scheme>:<id>` otherwise.
+ACTOR_RE = re.compile(r"^(?:[a-z][a-z0-9+.-]*:\S+|[^\s/:]+/\S+)$")
+ACTOR_FORMS = "<producer>/<version> or <scheme>:<id>"
+ROOT_INDEX_KEYS = {"okf_version", "title", "description", "license"}
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 LINK_RE = re.compile(r"\]\(([^)\s]+\.md)(?:#[^)]*)?\)")
 INDEX_ENTRY_RE = re.compile(r"^\* \[[^\]]+\]\([^)\s]+\)(?: - .*)?$")
 LOG_DATE_RE = re.compile(r"^## (\d{4}-\d{2}-\d{2})$")
@@ -115,7 +118,7 @@ def is_reserved(path: Path) -> bool:
 
 
 def parse_datetime(value: object) -> datetime.datetime | None:
-    """An ISO 8601 datetime with an explicit UTC offset (OKF v0.2 §5), else None."""
+    """An RFC 3339 date-time with an explicit offset (OKF v0.3 §5), else None."""
     if not isinstance(value, str) or "T" not in value:
         return None
     try:
@@ -123,6 +126,17 @@ def parse_datetime(value: object) -> datetime.datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo is not None else None
+
+
+def parse_timestamp(value: object) -> datetime.datetime | None:
+    """A date-time with an offset, or a date-only value as the start of that UTC day (§5)."""
+    if isinstance(value, str) and DATE_RE.match(value):
+        try:
+            day = datetime.date.fromisoformat(value)
+        except ValueError:
+            return None
+        return datetime.datetime.combine(day, datetime.time(), datetime.UTC)
+    return parse_datetime(value)
 
 
 def normalize_verified(fm: dict) -> list:
@@ -135,10 +149,17 @@ def normalize_verified(fm: dict) -> list:
     return verified if isinstance(verified, list) else [verified]
 
 
-def latest_verified(fm: dict) -> str:
-    """ISO text of the newest `verified[].at`, or '' when unverified."""
+def last_checked(fm: dict) -> datetime.datetime:
+    """The later of the newest `verified[].at` and `generated.at`; the epoch when neither parses.
+
+    Compared as instants, not text, so mixed offsets and date-only values order correctly.
+    """
+    generated = fm.get("generated")
     ats = [e.get("at") for e in normalize_verified(fm) if isinstance(e, dict)]
-    return max((a for a in ats if isinstance(a, str)), default="")
+    if isinstance(generated, dict):
+        ats.append(generated.get("at"))
+    parsed = [t for t in map(parse_timestamp, ats) if t is not None]
+    return max(parsed, default=datetime.datetime.fromtimestamp(0, datetime.UTC))
 
 
 def stamp(path: Path) -> str:
@@ -219,16 +240,13 @@ def check_actor_event(
         return
     by = event.get("by")
     if not isinstance(by, str) or not ACTOR_RE.match(by):
-        errors.append(
-            f"{rel}: {label}.by {by!r} is not an actor "
-            "(<producer>/<version>, human:<id>, or process:<id>)"
-        )
+        errors.append(f"{rel}: {label}.by {by!r} is not an actor ({ACTOR_FORMS})")
     at = event.get("at")
     if at is None and not require_at:
         return
     if parse_datetime(at) is None:
         errors.append(
-            f"{rel}: {label}.at {at!r} is not an ISO 8601 datetime with a UTC offset"
+            f"{rel}: {label}.at {at!r} is not an RFC 3339 date-time with an offset"
         )
 
 
@@ -266,7 +284,9 @@ def validate_concept(
         errors.append(f"{rel}: content_sha256 does not match body (run okf.py stamp)")
 
     if "timestamp" in fm:
-        errors.append(f"{rel}: 'timestamp' is superseded by 'generated.at' (OKF v0.2)")
+        errors.append(
+            f"{rel}: 'timestamp' is superseded by 'generated.at' (since OKF v0.2)"
+        )
     if "generated" not in fm:
         errors.append(f"{rel}: missing 'generated' ({{by, at}})")
     else:
@@ -285,10 +305,10 @@ def validate_concept(
         target = resolve_link(str(superseded_by), path)
         if target is None or not target.exists():
             warnings.append(f"{rel}: superseded_by target {superseded_by} not found")
-    if "stale_after" in fm and parse_datetime(fm["stale_after"]) is None:
+    if "stale_after" in fm and parse_timestamp(fm["stale_after"]) is None:
         errors.append(
-            f"{rel}: stale_after {fm['stale_after']!r} is not an ISO 8601 datetime "
-            "with a UTC offset"
+            f"{rel}: stale_after {fm['stale_after']!r} is not an RFC 3339 date-time "
+            "with an offset or a YYYY-MM-DD date"
         )
 
     sources = fm.get("sources")
@@ -303,15 +323,15 @@ def validate_concept(
                     errors.append(f"{rel}: sources[{i}] has no 'resource'")
                     continue
                 lm = entry.get("last_modified")
-                if lm is not None and parse_datetime(lm) is None:
+                if lm is not None and parse_timestamp(lm) is None:
                     errors.append(
-                        f"{rel}: sources[{i}].last_modified {lm!r} is not an ISO 8601 "
-                        "datetime with a UTC offset"
+                        f"{rel}: sources[{i}].last_modified {lm!r} is not an RFC 3339 "
+                        "date-time with an offset or a YYYY-MM-DD date"
                     )
                 author = entry.get("author")
                 if author is not None and not ACTOR_RE.match(str(author)):
                     errors.append(
-                        f"{rel}: sources[{i}].author {author!r} is not an actor"
+                        f"{rel}: sources[{i}].author {author!r} is not an actor ({ACTOR_FORMS})"
                     )
     if CITATIONS_RE.search(body):
         errors.append(f"{rel}: '# Citations' body list is superseded by 'sources'")
@@ -334,7 +354,7 @@ def validate_concept(
 
 
 def validate_index(path: Path, errors: list[str], warnings: list[str]) -> None:
-    """An index.md is frontmatter-free list sections; the root one declares okf_version (§8, §12)."""
+    """An index.md is list sections; only the root one has frontmatter, bundle metadata (§8.1)."""
     text = path.read_text(encoding="utf-8")
     rel = path.relative_to(REPO_ROOT)
     body = text
@@ -348,8 +368,14 @@ def validate_index(path: Path, errors: list[str], warnings: list[str]) -> None:
         except KbError as exc:
             errors.append(str(exc))
             return
-        if set(fm) != {"okf_version"}:
-            errors.append(f"{rel}: root index frontmatter may carry only okf_version")
+        extra = sorted(
+            k for k in fm if k not in ROOT_INDEX_KEYS and not str(k).startswith("x-")
+        )
+        if extra:
+            errors.append(
+                f"{rel}: root index frontmatter may carry only {sorted(ROOT_INDEX_KEYS)} "
+                f"and x- extension keys, found {extra}"
+            )
         if str(fm.get("okf_version")) != OKF_VERSION:
             errors.append(f'{rel}: okf_version must be "{OKF_VERSION}"')
     elif path.parent == REPO_ROOT:
@@ -428,6 +454,10 @@ def staged_markdown_files() -> list[Path]:
 
 def regenerate_index(directory: Path) -> None:
     """Write the directory's index.md in the §8 shape: one section, relative links."""
+    if directory == REPO_ROOT:
+        raise KbError(
+            f"{directory}: the root index.md carries bundle metadata; edit it by hand"
+        )
     entries = []
     for path in sorted(directory.glob("*.md")):
         if path.name in RESERVED:

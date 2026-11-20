@@ -4,7 +4,7 @@ A template repository and Claude Code plugin for building a knowledge base out o
 Claude Code sessions. It mines the transcripts under `~/.claude/projects` for one or more source
 repositories, distills durable facts (decisions and rationale, dead ends, conventions, gotchas,
 runbooks, integration quirks, tool-use patterns) into an
-[Open Knowledge Format v0.2](https://github.com/GoogleCloudPlatform/open-knowledge-format/blob/main/SPEC.md)
+[Open Knowledge Format v0.3](https://github.com/open-knowledge-format/open-knowledge-format/blob/main/SPEC.md)
 bundle of markdown concepts, and keeps that bundle current with a self-improving refresh loop
 that proposes every change as a pull request.
 
@@ -68,14 +68,19 @@ template/           bundle skeleton copied into a new knowledge base
 ## Spec version
 
 Bundles produced by this template conform to
-[Open Knowledge Format v0.2](https://github.com/GoogleCloudPlatform/open-knowledge-format/blob/main/SPEC.md)
-(§11 conformance): every concept has parseable frontmatter with a `type`, `index.md` files carry
-no frontmatter (the root one holds only `okf_version: "0.2"`), and `log.md` is a newest-first
-list of `## YYYY-MM-DD` groups. Concepts use the spec's `generated`, `verified`, `status`
-(`draft | stable | deprecated`), and `sources[].resource` families. Five keys are extensions the
-spec permits: `version` and `content_sha256` (the compare-and-set token), `superseded_by` (link from
-a deprecated decision to its replacement), and `project` and `path` on a source entry. `okf.py validate`
-enforces all of this, so a bundle that validates is conformant.
+[Open Knowledge Format v0.3](https://github.com/open-knowledge-format/open-knowledge-format/blob/main/SPEC.md)
+(§11 conformance): every concept has parseable frontmatter with a `type`, directory `index.md`
+files carry no frontmatter, the root one holds only bundle metadata (`okf_version: "0.3"`,
+`title`, `description`, optionally `license`), and `log.md` is a newest-first list of
+`## YYYY-MM-DD` groups. Concepts use the spec's `generated`, `verified`, `status`
+(`draft | stable | deprecated`), `superseded_by`, `stale_after`, and `sources` families. Four keys
+are extensions the spec permits: `version` and `content_sha256` (the compare-and-set token), and
+`project` and `path` on a source entry. They keep their unprefixed names, which predate the
+spec's `x-<producer>-<name>` advice, so existing bundles keep working. `okf.py validate` enforces
+all of this, so a bundle that validates is conformant.
+
+To move a v0.2 bundle to v0.3, copy in the new `scripts/` and change the root `index.md` to
+`okf_version: "0.3"`. No concept needs editing.
 
 ## kb.config.json
 

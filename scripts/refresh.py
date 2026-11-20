@@ -25,7 +25,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from okf import latest_verified, read_frontmatter
+from okf import last_checked, read_frontmatter
 
 KB = Path(__file__).resolve().parent.parent
 CONFIG = KB / "kb.config.json"
@@ -330,12 +330,11 @@ def select_review(concepts: list[tuple[str, dict]], count: int) -> list[str]:
     A concept's last-verified instant is the later of its newest `verified[].at` and
     its `generated.at` — a recent CAS update already re-verified it against the source.
     """
-    due: list[tuple[str, str]] = []
+    due: list[tuple[datetime.datetime, str]] = []
     for rel, fm in concepts:
         if fm.get("status") == "deprecated":
             continue
-        generated_at = str((fm.get("generated") or {}).get("at") or "")
-        due.append((max(latest_verified(fm), generated_at), rel))
+        due.append((last_checked(fm), rel))
     due.sort()
     return [rel for _, rel in due[:count]]
 
@@ -724,7 +723,7 @@ def log_entry(metrics: dict) -> str:
 
 
 def append_log(log: Path, today: str, entry: str) -> None:
-    """Insert entry under today's date group, newest group first (OKF v0.2 §9)."""
+    """Insert entry under today's date group, newest group first (OKF v0.3 §9)."""
     lines = log.read_text(encoding="utf-8").rstrip("\n").split("\n")
     heading = f"## {today}"
     if heading in lines:
